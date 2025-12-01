@@ -15,9 +15,9 @@ dependencies = [
     "faster-whisper>=1.0.0",
     # Audio I/O
     "sounddevice>=0.5.2",
-    # Voice Activity Detection
-    "webrtcvad>=2.0.10",
-    "setuptools",  # Required by webrtcvad for pkg_resources
+    # Voice Activity Detection (Silero VAD - more accurate than webrtcvad)
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
     # LLM Integration
     "langchain>=0.3.25",
     "langchain-core>=0.3.62",

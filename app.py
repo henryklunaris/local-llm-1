@@ -2,11 +2,11 @@ import time
 import collections
 import re
 import numpy as np
+import torch
 from faster_whisper import WhisperModel
 import sounddevice as sd
 import argparse
 import os
-import webrtcvad
 from rich.console import Console
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
@@ -30,8 +30,8 @@ parser.add_argument("--save-voice", action="store_true",
                     help="Save generated voice samples")
 parser.add_argument("--use-gpu", action="store_true", 
                     help="Use GPU for TTS inference (if available)")
-parser.add_argument("--vad-aggressiveness", type=int, default=2, choices=[0, 1, 2, 3],
-                    help="VAD aggressiveness (0=least, 3=most aggressive in filtering non-speech)")
+parser.add_argument("--vad-threshold", type=float, default=0.5,
+                    help="Silero VAD threshold (0.0-1.0, higher = more strict speech detection)")
 parser.add_argument("--silence-duration", type=float, default=0.8,
                     help="Seconds of silence before stopping recording")
 parser.add_argument("--min-speech-duration", type=float, default=0.5,
@@ -83,44 +83,54 @@ chain_with_history = RunnableWithMessageHistory(
 )
 
 
-class VADRecorder:
-    """Voice Activity Detection based recorder."""
+class SileroVADRecorder:
+    """Voice Activity Detection using Silero VAD (more accurate than webrtcvad)."""
     
     def __init__(
         self, 
         sample_rate: int = 16000,
-        frame_duration_ms: int = 30,
-        aggressiveness: int = 2,
+        threshold: float = 0.5,
         silence_duration: float = 0.8,
         min_speech_duration: float = 0.5,
     ):
         self.sample_rate = sample_rate
-        self.frame_duration_ms = frame_duration_ms
-        self.frame_size = int(sample_rate * frame_duration_ms / 1000)
-        self.aggressiveness = aggressiveness
+        self.threshold = threshold
         self.silence_duration = silence_duration
         self.min_speech_duration = min_speech_duration
         
-        # Initialize VAD
-        self.vad = webrtcvad.Vad(aggressiveness)
+        # Load Silero VAD model
+        self.model, self.utils = torch.hub.load(
+            repo_or_dir='snakers4/silero-vad',
+            model='silero_vad',
+            trust_repo=True
+        )
+        self.model.eval()
         
-        # Ring buffer for pre-speech audio (to not cut off beginning)
-        self.num_padding_frames = int(300 / frame_duration_ms)  # 300ms padding
+        # Get utility functions
+        (self.get_speech_timestamps, _, self.read_audio, _, _) = self.utils
+        
+        # Frame size for streaming (512 samples = 32ms at 16kHz)
+        self.frame_size = 512
+        self.frame_duration = self.frame_size / self.sample_rate
+        
+        # Ring buffer for pre-speech audio
+        self.num_padding_frames = int(0.3 / self.frame_duration)  # 300ms padding
         self.ring_buffer = collections.deque(maxlen=self.num_padding_frames)
         
     def record_until_silence(self) -> np.ndarray | None:
         """
-        Record audio using VAD to detect speech start and end.
+        Record audio using Silero VAD to detect speech start and end.
         Returns audio as float32 numpy array, or None if no speech detected.
         """
         frames = []
         is_speaking = False
         silence_frames = 0
         speech_frames = 0
-        silence_threshold = int(self.silence_duration * 1000 / self.frame_duration_ms)
-        min_speech_frames = int(self.min_speech_duration * 1000 / self.frame_duration_ms)
+        silence_threshold = int(self.silence_duration / self.frame_duration)
+        min_speech_frames = int(self.min_speech_duration / self.frame_duration)
         
         self.ring_buffer.clear()
+        self.model.reset_states()  # Reset VAD state for new recording
         
         def audio_callback(indata, frame_count, time_info, status):
             nonlocal is_speaking, silence_frames, speech_frames
@@ -128,14 +138,21 @@ class VADRecorder:
             if status:
                 console.print(f"[yellow]Audio status: {status}")
             
-            # Convert to bytes for VAD
-            audio_bytes = bytes(indata)
+            # Convert raw bytes to float32 tensor for Silero VAD
+            audio_int16 = np.frombuffer(indata, dtype=np.int16)
+            audio_float = audio_int16.astype(np.float32) / 32768.0
+            audio_tensor = torch.from_numpy(audio_float)
             
-            # Check if this frame contains speech
+            # Get speech probability from Silero VAD
             try:
-                is_speech = self.vad.is_speech(audio_bytes, self.sample_rate)
+                with torch.no_grad():
+                    speech_prob = self.model(audio_tensor, self.sample_rate).item()
+                is_speech = speech_prob > self.threshold
             except Exception:
                 is_speech = False
+            
+            # Store raw audio bytes
+            audio_bytes = bytes(indata)
             
             if not is_speaking:
                 # Not yet speaking - buffer frames and wait for speech
@@ -143,7 +160,7 @@ class VADRecorder:
                 if is_speech:
                     speech_frames += 1
                     # Need a few consecutive speech frames to trigger
-                    if speech_frames >= 3:
+                    if speech_frames >= 2:
                         is_speaking = True
                         # Add buffered frames to capture speech beginning
                         frames.extend(list(self.ring_buffer))
@@ -175,7 +192,7 @@ class VADRecorder:
                     break
                     
                 # Safety timeout - max 30 seconds of recording
-                if len(frames) > 30 * 1000 / self.frame_duration_ms:
+                if len(frames) > 30 / self.frame_duration:
                     break
         
         if not frames or len(frames) < min_speech_frames:
@@ -286,17 +303,17 @@ if __name__ == "__main__":
     console.print(f"[green]Voice style: {voice_name}")
     console.print(f"[blue]Speech speed: {args.speed}x")
     console.print(f"[blue]LLM model: {args.model}")
-    console.print(f"[blue]VAD aggressiveness: {args.vad_aggressiveness}")
+    console.print(f"[blue]VAD threshold: {args.vad_threshold}")
     console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    console.print("[green]🎙️  Voice Activity Detection ENABLED")
+    console.print("[green]🎙️  Silero VAD ENABLED (neural network-based)")
     console.print("[green]    Just start speaking - no need to press anything!")
     console.print("[dim]📝 System prompt: LM Studio preset[/dim]")
     console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     console.print("[cyan]Press Ctrl+C to exit.\n")
 
-    # Create VAD recorder
-    recorder = VADRecorder(
-        aggressiveness=args.vad_aggressiveness,
+    # Create Silero VAD recorder (more accurate than webrtcvad)
+    recorder = SileroVADRecorder(
+        threshold=args.vad_threshold,
         silence_duration=args.silence_duration,
         min_speech_duration=args.min_speech_duration,
     )

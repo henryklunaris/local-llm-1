@@ -16,7 +16,7 @@ A fully local, voice ai that runs entirely on your machine. No cloud APIs, no su
 | **STT** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (small.en) |
 | **TTS** | [Supertonic](https://github.com/supertone-inc/supertonic) (ONNX) |
 | **LLM** | [LM Studio](https://lmstudio.ai/) (any model) |
-| **VAD** | [webrtcvad](https://github.com/wiseman/py-webrtcvad) |
+| **VAD** | [Silero VAD](https://github.com/snakers4/silero-vad) (neural network) |
 
 ## Prerequisites
 
@@ -78,8 +78,8 @@ uv run python app.py --voice-style assets/voice_styles/M1.json
 # Faster speech
 uv run python app.py --speed 1.3
 
-# Adjust VAD sensitivity (0-3, higher = more aggressive filtering)
-uv run python app.py --vad-aggressiveness 3
+# Adjust VAD sensitivity (0.0-1.0, higher = stricter speech detection)
+uv run python app.py --vad-threshold 0.6
 
 # Save voice responses to files
 uv run python app.py --save-voice
@@ -93,7 +93,7 @@ uv run python app.py --save-voice
 | `--speed` | `1.05` | Speech speed (higher = faster) |
 | `--steps` | `5` | TTS quality steps (higher = better) |
 | `--model` | `qwen/qwen3-8b` | LLM model name in LM Studio |
-| `--vad-aggressiveness` | `2` | VAD sensitivity (0-3) |
+| `--vad-threshold` | `0.5` | Silero VAD threshold (0.0-1.0) |
 | `--silence-duration` | `0.8` | Seconds of silence to stop recording |
 | `--min-speech-duration` | `0.5` | Minimum speech length to process |
 | `--save-voice` | `false` | Save responses to `voices/` |
@@ -130,7 +130,7 @@ uv sync  # Reinstall dependencies
 
 ### Slow transcription
 - The first run downloads the Whisper model (~460MB)
-- Consider using `--vad-aggressiveness 3` to filter more noise
+- Consider using `--vad-threshold 0.6` to filter more noise
 
 ### TTS model not found
 ```bash
