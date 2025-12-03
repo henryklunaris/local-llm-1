@@ -42,7 +42,7 @@ brew install uv
 ### 2. Clone and setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/local-talking-llm.git
+git clone https://github.com/henryklunaris/local-talking-llm.git
 cd local-talking-llm
 
 # Install dependencies
